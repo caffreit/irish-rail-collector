@@ -10,3 +10,6 @@ venv/
 *.parquet
 *.bin
 
+
+# Local trial archives and databases
+data/
