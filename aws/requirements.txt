@@ -1,0 +1,4 @@
+# Local deployment and validation only; Lambda provides its runtime AWS SDK.
+boto3==1.44.9
+botocore[crt]==1.44.9
+cfn-lint==1.61.0

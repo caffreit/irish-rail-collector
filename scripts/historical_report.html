@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>October 2025 vehicle position archive</title>
+<style>
+:root{color-scheme:light dark;--ink:light-dark(#172923,#e6f0eb);--muted-ink:light-dark(#485d54,#afc1b8);--line:light-dark(#cbd8cf,#43534b);--plot:light-dark(#00634e,#59d5aa);--focus:light-dark(#a63d25,#ffa78d)}
+body{color:var(--ink);font:16px/1.5 system-ui,sans-serif;max-width:1000px;margin:auto}
+main{padding:clamp(12px,3vw,38px)}
+h1,h2,h3,p{margin:0 0 .55em}
+h1{font-size:clamp(27px,5vw,44px);line-height:1.12;letter-spacing:-.035em}
+h2{font-size:24px;letter-spacing:-.02em}
+h3{font-size:17px}
+small,.note,figcaption,header p:first-child{color:var(--muted-ink)}
+header p:first-child{letter-spacing:.1em;text-transform:uppercase;font-size:.78rem;font-weight:650}
+header{padding-bottom:1.3rem}
+section{border-top:1px solid var(--line);padding:1.25rem 0}
+nav{display:flex;gap:.45rem 1rem;flex-wrap:wrap;margin-top:1rem}
+a{color:var(--plot)}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:.8rem;margin:1.15rem 0}
+.metrics div{border-left:2px solid var(--plot);padding-left:.65rem}
+.metrics strong{display:block;font-size:clamp(19px,3.5vw,27px);font-variant-numeric:tabular-nums}
+figure{margin:1.2rem 0}
+figcaption{font-size:.87rem;margin-top:.5rem}
+svg{display:block;width:100%;height:auto;overflow:visible;font:19px system-ui;fill:var(--muted-ink)}
+svg rect.bar{fill:var(--plot)}
+svg rect.bar:hover{fill:var(--focus)}
+svg .axis{stroke:var(--line);stroke-width:1}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,330px),1fr));gap:1.4rem}
+.bars{display:grid;grid-template-columns:minmax(95px,auto) minmax(50px,1fr) 5.3em;gap:.35rem .6rem;align-items:center;font-size:.83rem;font-variant-numeric:tabular-nums}
+.bars .track{height:.55rem;background:var(--line);border-radius:2px}
+.bars .fill{display:block;height:100%;background:var(--plot);border-radius:2px}
+.bars span:nth-child(3n){text-align:right}
+select{font:inherit;max-width:100%;padding:.32em}
+.trace{max-width:650px}
+table{border-collapse:collapse;width:100%;font-size:.87rem}
+th,td{text-align:left;padding:.4em .55em;border-bottom:1px solid var(--line)}
+th:last-child,td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+th{color:var(--muted-ink)}
+summary{cursor:pointer;font-weight:650}
+.ideas{list-style:none;padding:0;margin:0}
+.ideas li{border-top:1px solid var(--line);padding:.8em 0}
+.ideas li:first-child{border-top:0}
+.ideas li p{margin:0}
+footer{border-top:1px solid var(--line);padding-top:1rem;font-size:.85rem;color:var(--muted-ink)}
+</style>
+<main>
+<header>
+<p>Historical GTFS Realtime · S3 archive</p>
+<h1>What can we learn from four weeks of vehicle positions?</h1>
+<p id="range"></p>
+<div class="metrics" id="metrics"></div>
+<nav aria-label="Report sections"><a href="#coverage">Coverage</a><a href="#quality">Data quality</a><a href="#replays">Journey examples</a><a href="#ideas">Analysis ideas</a></nav>
+</header>
+
+<section id="coverage">
+<h2>Collector coverage</h2>
+<p id="cadence"></p>
+<figure>
+<h3>Archived snapshots by UTC date</h3>
+<div id="days"></div>
+<figcaption>One Parquet file per archived snapshot. The first and last dates are partial.</figcaption>
+</figure>
+<figure>
+<h3>Vehicle observations by Dublin clock hour</h3>
+<div id="hours"></div>
+<figcaption>Total rows across the archive. A vehicle can contribute many rows. The repeated hour when clocks changed is included twice, and partial dates contribute where available.</figcaption>
+</figure>
+</section>
+
+<section id="quality">
+<h2>What each row can tell us</h2>
+<p>A snapshot contains one row per reported vehicle entity. Each row can carry a trip ID, route ID, vehicle ID, location, feed timestamp and a vehicle timestamp. The service date and scheduled start time help distinguish instances of the same trip, including services whose GTFS clock passes 24:00.</p>
+<div class="grid">
+<figure>
+<h3>Age of positions when collected</h3>
+<div class="bars" id="ages"></div>
+<figcaption>Feed timestamp minus vehicle timestamp, where both are present. Repeated reports of the same position count as separate rows. The collector can substitute the feed timestamp when a vehicle timestamp is missing, so the youngest bin can include those fallbacks.</figcaption>
+</figure>
+<figure>
+<h3>Most reported route IDs</h3>
+<div class="bars" id="routes"></div>
+<figcaption>Share of all rows for each of the 12 most reported route IDs. IDs still need to be linked to an October 2025 timetable to identify operators, modes and named routes.</figcaption>
+</figure>
+</div>
+<details>
+<summary>Field completeness across all files</summary>
+<table><thead><tr><th scope="col">Stored field</th><th scope="col">Non-null rows</th></tr></thead><tbody id="fields"></tbody></table>
+<p class="note">Non-null counts describe storage. A zero, empty string or timestamp fallback can still be present.</p>
+</details>
+</section>
+
+<section id="replays">
+<h2>Example journeys near Dublin</h2>
+<p>These traces show what reconstruction looks like before identifying routes. Select a trip to see its reported path and position freshness filters.</p>
+<div id="replay">
+<label for="choose">Example trip</label>
+<select id="choose"></select>
+<div class="grid">
+<figure class="trace"><h3>Reported GPS path</h3><div id="trace"></div><figcaption id="metadata"></figcaption></figure>
+<figure><h3>Distance from the first report</h3><div id="progress"></div><figcaption>Straight-line distance from the first reported location. A flat section can come from repeated coordinates or movement at roughly the same distance from the start.</figcaption></figure>
+</div>
+</div>
+<p class="note">Examples come from the morning of 13 October 2025. They group points by route, trip, vehicle, service date and start time, and keep one point per vehicle timestamp. The examples favour routes with many distinct coordinates. They use reports no more than two minutes old and split at gaps over three minutes. Lines connect GPS reports and can cut across corners. The four examples are not a representative sample.</p>
+</section>
+
+<section id="ideas">
+<h2>Analyses we could build</h2>
+<ol class="ideas">
+<li><h3>Journey time bands by section</h3><p>Once we identify a route, infer when each trip crosses two fixed points. Plot median and 90th percentile journey times by direction and departure hour. Show the number of usable trips and reject crossings that fall inside long GPS gaps.</p></li>
+<li><h3>Service gaps and bunching</h3><p>At a station or other point on a matched route, plot the time between consecutive observed vehicles. A day-by-hour heatmap would show where gaps cluster. Use collector coverage and position freshness to flag intervals where a missing vehicle could inflate the gap.</p></li>
+<li><h3>Repeated slow sections</h3><p>Match trajectories to the track and compare time spent on each section across trips. A distance-by-time plot can reveal repeated slow approaches or unusually long station stops. Compare like directions and stop patterns, and avoid treating missing GPS points as stopped trains.</p></li>
+<li><h3>Replay an unusual day</h3><p>Overlay movement diagrams for a day with unusually long gaps or journeys and a comparable baseline day. Use the sequence of observed movements to describe how service recovered. Explaining the cause would require independent incident information.</p></li>
+<li><h3>Scheduled versus observed service</h3><p>With an October 2025 timetable covering the relevant days, join historical trip IDs and calendars, then compare estimated crossings with scheduled stop times. Plot delay distributions and unmatched trips separately. Cancellation estimates would also need evidence that the feed captured running trains reliably.</p></li>
+<li><h3>How reliable was the source feed?</h3><p>Plot stale and repeated positions by route and time. Compare the fraction of trips we can reconstruct under different freshness thresholds. This shows where the archive is suitable for service analysis before we draw conclusions about operations.</p></li>
+</ol>
+</section>
+<footer>Source: archived NTA GTFS Realtime vehicle positions in <code>irish-rail-data-prod/gtfs_rt/vehicle_positions/</code>. The 2026 timetable in this project applies to a later period.</footer>
+</main>
+<script>
+const data = /* ARCHIVE_DATA */ null;
+const fmt = new Intl.NumberFormat("en-IE");
+const clock = new Intl.DateTimeFormat("en-IE", {timeZone:"Europe/Dublin", dateStyle:"medium", timeStyle:"short"});
+const el = id => document.getElementById(id);
+const pct = fraction => (fraction * 100).toLocaleString("en-IE", {maximumFractionDigits:1}) + "%";
+
+function node(tag, text, parent) {
+  const n = document.createElement(tag);
+  n.textContent = text;
+  parent.append(n);
+  return n;
+}
+
+function svg(tag, attrs, parent, label) {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(attrs)) n.setAttribute(key,value);
+  if (label) n.textContent = label;
+  parent.append(n);
+  return n;
+}
+
+function columns(target, values, ticks, name, yLabel) {
+  const graph = svg("svg", {viewBox:"0 0 680 220",role:"img","aria-label":name}, el(target));
+  const origin = 65, width = 598, floor = 160;
+  const max = Math.ceil(Math.max(...values.map(v=>v[1])) / (target === "hours" ? 500000 : 500)) * (target === "hours" ? 500000 : 500);
+  const step = width / values.length;
+  [0, .5, 1].forEach(fraction=>{
+    const y = floor - 122*fraction;
+    svg("line",{x1:origin,x2:origin+width,y1:y,y2:y,class:"axis"},graph);
+    svg("text",{x:origin-7,y:y+6,"text-anchor":"end"},graph,Intl.NumberFormat("en-IE",{notation:"compact"}).format(max*fraction));
+  });
+  values.forEach(([label,value],i)=>{
+    const height = 122*value/max;
+    const x = origin+i*step;
+    const bar = svg("rect",{x:x+2,y:floor-height,width:step-4,height,class:"bar"},graph);
+    svg("title",{},bar,label+" · "+fmt.format(value)+" "+yLabel.toLowerCase());
+    if(ticks[i]) svg("text",{x:x+step/2,y:185,"text-anchor":"middle"},graph,ticks[i]);
+  });
+  svg("text",{x:origin+width/2,y:213,"text-anchor":"middle"},graph,target==="days"?"Date in 2025 (UTC)":"Hour of day (Dublin)");
+  svg("text",{x:origin,y:24},graph,yLabel);
+}
+
+function bars(target, values, denominator) {
+  const max = Math.max(...values.map(v=>v[1]));
+  for (const [label,count] of values) {
+    node("span",label,el(target));
+    const track = node("span","",el(target));
+    track.className = "track";
+    track.title = fmt.format(count) + " rows";
+    const fill = node("span","",track);
+    fill.className = "fill";
+    fill.style.width = (max ? count/max*100 : 0) + "%";
+    node("span",pct(count/denominator),el(target));
+  }
+}
+
+el("range").textContent = clock.format(new Date(data.first_poll)) + " to " + clock.format(new Date(data.last_poll)) + " · Dublin time";
+for (const [value,label] of [[fmt.format(data.files),"snapshots"],[fmt.format(data.rows),"vehicle observations"],[fmt.format(data.route_count),"distinct route IDs"],[(data.bytes/1e9).toFixed(2)+" GB","local archive"]]) {
+  const metric = node("div","",el("metrics"));
+  node("strong",value,metric);
+  node("small",label,metric);
+}
+el("cadence").textContent = "The median gap between saved snapshots was " + data.median_gap + " seconds. The longest was " + fmt.format(data.max_gap) + " seconds, beginning " + clock.format(new Date(data.max_gap_start)) + ".";
+columns("days",data.dates.map(d=>[d.date,d.files]),{0:"28 Sep",7:"5 Oct",14:"12 Oct",21:"19 Oct",29:"27 Oct"},"Archived snapshots by UTC date","Snapshots");
+columns("hours",data.hours.map((count,i)=>[String(i).padStart(2,"0")+":00",count]),{0:"00",4:"04",8:"08",12:"12",16:"16",20:"20",23:"23"},"Vehicle observations by Dublin clock hour","Observation rows");
+bars("ages",data.lags,data.lags.reduce((sum,v)=>sum+v[1],0));
+bars("routes",data.routes,data.rows);
+for (const [field,count] of Object.entries(data.fields)) {
+  const tr = node("tr","",el("fields"));
+  node("td",field,tr);
+  node("td",fmt.format(count) + " · " + pct(count/data.rows),tr);
+}
+
+function drawTrace() {
+  const trace = data.traces[Number(el("choose").value)];
+  const first = trace.points[0], last = trace.points.at(-1);
+  const scale = Math.cos(first[1]*Math.PI/180);
+  const points = trace.points.map(([t,lat,lon])=>[(lon-first[2])*111.2*scale,(lat-first[1])*111.2]);
+  const xs = points.map(p=>p[0]), ys = points.map(p=>p[1]);
+  const midX = (Math.min(...xs)+Math.max(...xs))/2, midY = (Math.min(...ys)+Math.max(...ys))/2;
+  const pixels = Math.min(570/(Math.max(...xs)-Math.min(...xs)||1),300/(Math.max(...ys)-Math.min(...ys)||1));
+  const x = value => 335+(value-midX)*pixels, y = value => 187-(value-midY)*pixels;
+  el("trace").replaceChildren();
+  const graph = svg("svg",{viewBox:"0 0 670 380",role:"img","aria-label":" GPS path plotted in kilometres east and north of first observation"},el("trace"));
+  svg("line",{x1:20,x2:650,y1:y(0),y2:y(0),class:"axis"},graph);
+  svg("line",{x1:x(0),x2:x(0),y1:30,y2:345,class:"axis"},graph);
+  svg("polyline",{points:points.map(([a,b])=>x(a)+","+y(b)).join(" "),fill:"none",stroke:"var(--plot)","stroke-width":2},graph);
+  points.forEach(([a,b],i)=>{
+    const mark=svg("circle",{cx:x(a),cy:y(b),r:i===0||i===points.length-1?5:2,fill:i===points.length-1?"var(--focus)":"var(--plot)"},graph);
+    svg("title",{},mark,clock.format(new Date(trace.points[i][0]*1000)));
+  });
+  svg("text",{x:20,y:20},graph,"North ↑");
+  svg("text",{x:650,y:370,"text-anchor":"end"},graph,"East →");
+  const units = pixels<25?5:pixels<100?1:.25;
+  svg("line",{x1:20,x2:20+units*pixels,y1:350,y2:350,stroke:"var(--ink)","stroke-width":3},graph);
+  svg("text",{x:20,y:375},graph,units+" km");
+  el("metadata").textContent = clock.format(new Date(first[0]*1000))+" to "+clock.format(new Date(last[0]*1000))+" · "+fmt.format(points.length)+" distinct report timestamps · red marks the last observation.";
+
+  el("progress").replaceChildren();
+  const progress = svg("svg",{viewBox:"0 0 400 240",role:"img","aria-label":"Straight-line distance from first report by elapsed minutes"},el("progress"));
+  const distances = points.map(([east,north])=>Math.hypot(east,north));
+  const maxDistance = Math.ceil(Math.max(...distances));
+  const maxMinutes = Math.ceil((last[0]-first[0])/60);
+  [0,.5,1].forEach(f=>{
+    const gy = 177-f*136;
+    svg("line",{x1:55,x2:376,y1:gy,y2:gy,class:"axis"},progress);
+    svg("text",{x:47,y:gy+6,"text-anchor":"end"},progress,maxDistance*f);
+    svg("text",{x:55+321*f,y:201,"text-anchor":"middle"},progress,maxMinutes*f);
+  });
+  svg("text",{x:55,y:25},progress,"Distance (km)");
+  svg("text",{x:215,y:231,"text-anchor":"middle"},progress,"Elapsed minutes");
+  const observations = distances.map((distance,i)=>
+    [55+321*(trace.points[i][0]-first[0])/(maxMinutes*60),177-136*distance/maxDistance]);
+  svg("polyline",{points:observations.map(([a,b])=>a+","+b).join(" "),fill:"none",stroke:"var(--plot)","stroke-width":2},progress);
+  observations.forEach(([a,b])=>svg("circle",{cx:a,cy:b,r:2,fill:"var(--plot)"},progress));
+}
+if (data.traces.length) {
+  data.traces.forEach((t,i)=>{
+    node("option","Route "+t.route+" / trip "+t.trip,el("choose")).value = i;
+  });
+  el("choose").addEventListener("change",drawTrace);
+  drawTrace();
+} else {
+  el("replays").hidden = true;
+  document.querySelector('a[href="#replays"]').hidden = true;
+}
+</script>
+</html>

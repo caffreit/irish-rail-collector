@@ -1,0 +1,923 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Bounded DART collection with next-day settlement and daily cost/data email.",
+  "Parameters": {
+    "CodeBucket": {
+      "Type": "String"
+    },
+    "CodeKey": {
+      "Type": "String"
+    },
+    "NtaSecretArn": {
+      "Type": "String",
+      "Default": ""
+    },
+    "TrialPrefix": {
+      "Type": "String"
+    },
+    "StartEpoch": {
+      "Type": "String"
+    },
+    "EndEpoch": {
+      "Type": "String"
+    },
+    "StartIso": {
+      "Type": "String"
+    },
+    "TailEndIso": {
+      "Type": "String"
+    },
+    "IndexKey": {
+      "Type": "String"
+    },
+    "StaticChecked": {
+      "Type": "String"
+    },
+    "ScheduleState": {
+      "Type": "String",
+      "AllowedValues": [
+        "DISABLED",
+        "ENABLED"
+      ],
+      "Default": "DISABLED"
+    },
+    "EnableNta": {
+      "Type": "String",
+      "AllowedValues": [
+        "true",
+        "false"
+      ],
+      "Default": "false"
+    },
+    "ReportEmail": {
+      "Type": "String"
+    },
+    "ReportEndIso": {
+      "Type": "String"
+    }
+  },
+  "Conditions": {
+    "UseNta": {
+      "Fn::Equals": [
+        {
+          "Ref": "EnableNta"
+        },
+        "true"
+      ]
+    }
+  },
+  "Resources": {
+    "Archive": {
+      "Type": "AWS::S3::Bucket",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "State": {
+      "Type": "AWS::DynamoDB::Table",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "pk",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "pk",
+            "KeyType": "HASH"
+          }
+        ],
+        "SSESpecification": {
+          "SSEEnabled": true
+        }
+      }
+    },
+    "WorkerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "collector",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:PutObject",
+                    "s3:AbortMultipartUpload"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "${Archive.Arn}/*"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "s3:ListBucket",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "Archive",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:DeleteItem"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "State",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Fn::If": [
+                    "UseNta",
+                    {
+                      "Effect": "Allow",
+                      "Action": [
+                        "secretsmanager:GetSecretValue"
+                      ],
+                      "Resource": {
+                        "Ref": "NtaSecretArn"
+                      }
+                    },
+                    {
+                      "Ref": "AWS::NoValue"
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}*:*"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "Logs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "Worker": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "Logs",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "AWS::StackName"
+        },
+        "Runtime": "python3.12",
+        "Handler": "aws.handler.handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "WorkerRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 1024,
+        "Timeout": 900,
+        "EphemeralStorage": {
+          "Size": 2048
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "CodeBucket"
+          },
+          "S3Key": {
+            "Ref": "CodeKey"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "BUCKET": {
+              "Ref": "Archive"
+            },
+            "TABLE": {
+              "Ref": "State"
+            },
+            "PREFIX": {
+              "Ref": "TrialPrefix"
+            },
+            "START": {
+              "Ref": "StartEpoch"
+            },
+            "END": {
+              "Ref": "EndEpoch"
+            },
+            "INDEX_KEY": {
+              "Ref": "IndexKey"
+            },
+            "STATIC_CHECKED": {
+              "Ref": "StaticChecked"
+            },
+            "NTA_SECRET_ARN": {
+              "Ref": "NtaSecretArn"
+            },
+            "NTA_ENABLED": {
+              "Ref": "EnableNta"
+            }
+          }
+        }
+      }
+    },
+    "AsyncPolicy": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "Worker"
+        },
+        "Qualifier": "$LATEST",
+        "MaximumRetryAttempts": 0,
+        "MaximumEventAgeInSeconds": 60
+      }
+    },
+    "SchedulerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "scheduler.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "invoke-collector",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "lambda:InvokeFunction",
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "Worker",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "ReportFunction",
+                        "Arn"
+                      ]
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "SettlementFunction",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "Schedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Properties": {
+        "Name": {
+          "Ref": "AWS::StackName"
+        },
+        "State": {
+          "Ref": "ScheduleState"
+        },
+        "ScheduleExpression": "rate(2 minutes)",
+        "ScheduleExpressionTimezone": "UTC",
+        "StartDate": {
+          "Ref": "StartIso"
+        },
+        "EndDate": {
+          "Ref": "TailEndIso"
+        },
+        "FlexibleTimeWindow": {
+          "Mode": "OFF"
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "Worker",
+              "Arn"
+            ]
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "SchedulerRole",
+              "Arn"
+            ]
+          },
+          "Input": "{}",
+          "RetryPolicy": {
+            "MaximumRetryAttempts": 0,
+            "MaximumEventAgeInSeconds": 60
+          }
+        }
+      }
+    },
+    "Errors": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmDescription": "Collector invocation failed; inspect S3 latest.json and logs.",
+        "Namespace": "AWS/Lambda",
+        "MetricName": "Errors",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "Worker"
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "ReportTopic"
+          }
+        ]
+      }
+    },
+    "ReportTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "DisplayName": "DART collection checks"
+      }
+    },
+    "ReportSubscription": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "TopicArn": {
+          "Ref": "ReportTopic"
+        },
+        "Protocol": "email",
+        "Endpoint": {
+          "Ref": "ReportEmail"
+        }
+      }
+    },
+    "ReportTopicPolicy": {
+      "Type": "AWS::SNS::TopicPolicy",
+      "Properties": {
+        "Topics": [
+          {
+            "Ref": "ReportTopic"
+          }
+        ],
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudwatch.amazonaws.com"
+              },
+              "Action": "sns:Publish",
+              "Resource": {
+                "Ref": "ReportTopic"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnLike": {
+                  "aws:SourceArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "ReportRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "collector",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:PutObject",
+                    "s3:AbortMultipartUpload"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "${Archive.Arn}/*"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "s3:ListBucket",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "Archive",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:DeleteItem"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "State",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${AWS::StackName}*:*"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ce:GetCostAndUsage",
+                    "cloudwatch:GetMetricStatistics"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "sns:Publish",
+                    "sns:ListSubscriptionsByTopic"
+                  ],
+                  "Resource": {
+                    "Ref": "ReportTopic"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ReportLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-daily-report"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "ReportFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "ReportLogs",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${AWS::StackName}-daily-report"
+        },
+        "Runtime": "python3.12",
+        "Handler": "aws.daily_report.handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "ReportRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 1024,
+        "Timeout": 900,
+        "EphemeralStorage": {
+          "Size": 2048
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "CodeBucket"
+          },
+          "S3Key": {
+            "Ref": "CodeKey"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "BUCKET": {
+              "Ref": "Archive"
+            },
+            "TABLE": {
+              "Ref": "State"
+            },
+            "PREFIX": {
+              "Ref": "TrialPrefix"
+            },
+            "START": {
+              "Ref": "StartEpoch"
+            },
+            "END": {
+              "Ref": "EndEpoch"
+            },
+            "INDEX_KEY": {
+              "Ref": "IndexKey"
+            },
+            "STATIC_CHECKED": {
+              "Ref": "StaticChecked"
+            },
+            "NTA_SECRET_ARN": {
+              "Ref": "NtaSecretArn"
+            },
+            "NTA_ENABLED": {
+              "Ref": "EnableNta"
+            },
+            "WORKER_FUNCTION": {
+              "Ref": "Worker"
+            },
+            "REPORT_TOPIC": {
+              "Ref": "ReportTopic"
+            },
+            "REPORT_EMAIL": {
+              "Ref": "ReportEmail"
+            }
+          }
+        }
+      }
+    },
+    "ReportAsyncPolicy": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "ReportFunction"
+        },
+        "Qualifier": "$LATEST",
+        "MaximumRetryAttempts": 1,
+        "MaximumEventAgeInSeconds": 3600
+      }
+    },
+    "ReportSchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-daily-report"
+        },
+        "State": {
+          "Ref": "ScheduleState"
+        },
+        "ScheduleExpression": "cron(0 9 * * ? *)",
+        "ScheduleExpressionTimezone": "Europe/Dublin",
+        "StartDate": {
+          "Ref": "StartIso"
+        },
+        "EndDate": {
+          "Ref": "ReportEndIso"
+        },
+        "FlexibleTimeWindow": {
+          "Mode": "OFF"
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "ReportFunction",
+              "Arn"
+            ]
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "SchedulerRole",
+              "Arn"
+            ]
+          },
+          "Input": "{}",
+          "RetryPolicy": {
+            "MaximumRetryAttempts": 1,
+            "MaximumEventAgeInSeconds": 3600
+          }
+        }
+      }
+    },
+    "ReportErrors": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmDescription": "Report job failed; inspect its logs and private archive.",
+        "Namespace": "AWS/Lambda",
+        "MetricName": "Errors",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "ReportFunction"
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "ReportTopic"
+          }
+        ]
+      }
+    },
+    "SettlementLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-settlement"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "SettlementFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "SettlementLogs",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${AWS::StackName}-settlement"
+        },
+        "Runtime": "python3.12",
+        "Handler": "aws.settlement.handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "WorkerRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 1024,
+        "Timeout": 900,
+        "EphemeralStorage": {
+          "Size": 2048
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "CodeBucket"
+          },
+          "S3Key": {
+            "Ref": "CodeKey"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "BUCKET": {
+              "Ref": "Archive"
+            },
+            "TABLE": {
+              "Ref": "State"
+            },
+            "PREFIX": {
+              "Ref": "TrialPrefix"
+            },
+            "START": {
+              "Ref": "StartEpoch"
+            },
+            "END": {
+              "Ref": "EndEpoch"
+            },
+            "INDEX_KEY": {
+              "Ref": "IndexKey"
+            },
+            "STATIC_CHECKED": {
+              "Ref": "StaticChecked"
+            },
+            "NTA_SECRET_ARN": {
+              "Ref": "NtaSecretArn"
+            },
+            "NTA_ENABLED": {
+              "Ref": "EnableNta"
+            },
+            "WORKER_FUNCTION": {
+              "Ref": "Worker"
+            },
+            "REPORT_TOPIC": {
+              "Ref": "ReportTopic"
+            },
+            "REPORT_EMAIL": {
+              "Ref": "ReportEmail"
+            }
+          }
+        }
+      }
+    },
+    "SettlementAsyncPolicy": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "SettlementFunction"
+        },
+        "Qualifier": "$LATEST",
+        "MaximumRetryAttempts": 1,
+        "MaximumEventAgeInSeconds": 3600
+      }
+    },
+    "SettlementSchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-settlement"
+        },
+        "State": {
+          "Ref": "ScheduleState"
+        },
+        "ScheduleExpression": "cron(0 6 * * ? *)",
+        "ScheduleExpressionTimezone": "Europe/Dublin",
+        "StartDate": {
+          "Ref": "StartIso"
+        },
+        "EndDate": {
+          "Ref": "ReportEndIso"
+        },
+        "FlexibleTimeWindow": {
+          "Mode": "OFF"
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "SettlementFunction",
+              "Arn"
+            ]
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "SchedulerRole",
+              "Arn"
+            ]
+          },
+          "Input": "{}",
+          "RetryPolicy": {
+            "MaximumRetryAttempts": 1,
+            "MaximumEventAgeInSeconds": 3600
+          }
+        }
+      }
+    },
+    "SettlementErrors": {
+      "Type": "AWS::CloudWatch::Alarm",
+      "Properties": {
+        "AlarmDescription": "Settlement job failed; inspect its logs and private archive.",
+        "Namespace": "AWS/Lambda",
+        "MetricName": "Errors",
+        "Dimensions": [
+          {
+            "Name": "FunctionName",
+            "Value": {
+              "Ref": "SettlementFunction"
+            }
+          }
+        ],
+        "Statistic": "Sum",
+        "Period": 300,
+        "EvaluationPeriods": 1,
+        "Threshold": 1,
+        "ComparisonOperator": "GreaterThanOrEqualToThreshold",
+        "TreatMissingData": "notBreaching",
+        "AlarmActions": [
+          {
+            "Ref": "ReportTopic"
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "Bucket": {
+      "Value": {
+        "Ref": "Archive"
+      }
+    },
+    "Table": {
+      "Value": {
+        "Ref": "State"
+      }
+    },
+    "Function": {
+      "Value": {
+        "Ref": "Worker"
+      }
+    },
+    "Schedule": {
+      "Value": {
+        "Ref": "Schedule"
+      }
+    },
+    "ReportFunction": {
+      "Value": {
+        "Ref": "ReportFunction"
+      }
+    },
+    "SettlementFunction": {
+      "Value": {
+        "Ref": "SettlementFunction"
+      }
+    },
+    "ReportTopic": {
+      "Value": {
+        "Ref": "ReportTopic"
+      }
+    },
+    "ReportSchedule": {
+      "Value": {
+        "Ref": "ReportSchedule"
+      }
+    },
+    "SettlementSchedule": {
+      "Value": {
+        "Ref": "SettlementSchedule"
+      }
+    }
+  }
+}
